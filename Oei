@@ -1,0 +1,64 @@
+@'
+local _tostring, _print, _type, _rawget, _setmetatable, _pcall, _ipairs = tostring, print, type, rawget, setmetatable, pcall, ipairs
+local orig_loadstring, orig_typeof = loadstring, typeof or _type
+local seen, locking = {}, false
+local function log(t, v)
+    if locking then return end
+    locking = true
+    _pcall(function()
+        local s = _tostring(v)
+        if #s >= 5 and #s <= 500 and not seen[t .. s] then
+            seen[t .. s] = true
+            _print("[" .. t .. "] " .. s)
+        end
+    end)
+    locking = false
+end
+local function spy(n, tp)
+    return _setmetatable({__tp = tp or "Instance"}, {
+        __index = function(_, k)
+            local key = _tostring(k)
+            log("GET", n .. "." .. key)
+            return spy(n .. "." .. key, "Instance")
+        end,
+        __newindex = function(_, k, v)
+            _pcall(function() log("SET", n .. "." .. _tostring(k) .. "=" .. _tostring(v)) end)
+        end,
+        __call = function(_, ...)
+            for _, a in _ipairs({...}) do log("ARG", a) end
+            log("CALL", n)
+            return spy(n .. "()", n:match("^([%w_]+)") or "Instance")
+        end,
+        __tostring = function() return n end,
+        __eq = function() return true end, __lt = function() return false end, __le = function() return true end,
+        __add = function() return 0 end, __sub = function() return 0 end, __mul = function() return 0 end, __div = function() return 0 end,
+        __concat = function(a, b) local r = _tostring(a) .. _tostring(b); log("CAT", r); return r end
+    })
+end
+typeof = function(v)
+    if orig_typeof(v) == "table" and _rawget(v, "__tp") then return _rawget(v, "__tp") end
+    return orig_typeof(v)
+end
+loadstring = function(c, name)
+    log("STAGE2_OK", #_tostring(c))
+    return orig_loadstring(c, name)
+end
+load = loadstring
+game = spy("game", "Instance"); workspace = spy("workspace", "Instance"); script = spy("script", "Instance")
+Instance = spy("Instance", "table"); Enum = spy("Enum", "Enums"); task = spy("task", "table")
+Vector3 = spy("Vector3", "table"); Vector2 = spy("Vector2", "table"); CFrame = spy("CFrame", "table")
+Color3 = spy("Color3", "table"); UDim2 = spy("UDim2", "table"); TweenInfo = spy("TweenInfo", "table")
+syn = spy("syn", "table"); http = spy("http", "table"); request = spy("request", "function"); http_request = spy("http_request", "function")
+tick = os.clock; time = os.clock; warn = function(...) log("WARN", ...) end
+getgenv = function() return _G end; getrenv = function() return _G end
+_G.loadstring = loadstring; _G.load = load
+identifyexecutor = function() return "Delta", "2.0" end
+wait = function() return 0.03 end; spawn = function(f) if _type(f)=="function" then _pcall(f) end end
+local real = {setmetatable=setmetatable,getmetatable=getmetatable,rawget=rawget,rawset=rawset,bit32=bit32,coroutine=coroutine,buffer=buffer,string=string,table=table,tonumber=tonumber,tostring=tostring,select=select,pairs=pairs,ipairs=ipairs,unpack=unpack,pcall=pcall,xpcall=xpcall,error=error,assert=assert,type=type,next=next,math=math,os=os,debug=debug,vector=vector,Rect=Rect}
+local mt = {__index = function(_, k) if real[k] ~= nil then return real[k] end; log("GLOBAL", k); return spy(_tostring(k), "Instance") end}
+_pcall(function() _setmetatable(getfenv(0), mt) end)
+_pcall(function() _setmetatable(getfenv(1), mt) end)
+'@ | Out-File -FilePath "sandbox_full.lua" -Encoding ascii
+[IO.File]::WriteAllText("full_run.lua", (Get-Content "sandbox_full.lua" -Raw) + "`n" + (Get-Content "input.lua" -Raw))
+.\luau.exe full_run.lua *> final_dump.txt
+notepad final_dump.txt
