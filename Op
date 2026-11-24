@@ -1,0 +1,63 @@
+@'
+local seen = {}
+local function log(t, v)
+    local s = tostring(v)
+    if #s >= 5 and #s <= 500 and not seen[t .. s] then
+        seen[t .. s] = true
+        print("[" .. t .. "] " .. s)
+    end
+end
+local function spy(n, tp)
+    return setmetatable({__tp = tp or "Instance"}, {
+        __index = function(_, k)
+            log("GET", n .. "." .. tostring(k))
+            return spy(n .. "." .. tostring(k), "Instance")
+        end,
+        __newindex = function(_, k, v) log("SET", n .. "." .. tostring(k) .. "=" .. tostring(v)) end,
+        __call = function(_, ...)
+            for _, a in ipairs({...}) do log("ARG", a) end
+            log("CALL", n)
+            return spy(n .. "()", n:match("^([%w_]+)") or "Instance")
+        end,
+        __tostring = function() return n end,
+        __eq = function() return true end,
+        __lt = function() return false end,
+        __le = function() return true end,
+        __add = function() return 0 end,
+        __sub = function() return 0 end,
+        __mul = function() return 0 end,
+        __div = function() return 0 end,
+        __concat = function(a, b) local r = tostring(a) .. tostring(b); log("CAT", r); return r end
+    })
+end
+local orig_typeof = typeof
+typeof = function(v)
+    if orig_typeof(v) == "table" and rawget(v, "__tp") then return rawget(v, "__tp") end
+    return orig_typeof(v)
+end
+local orig_char, orig_concat = string.char, table.concat
+string = setmetatable({char = function(...) local s = orig_char(...); log("STR", s); return s end}, {__index = string})
+table = setmetatable({concat = function(t, sep, i, j) local s = orig_concat(t, sep, i, j); log("STR", s); return s end}, {__index = table})
+pcall(function()
+    local orig_buf = buffer.readstring
+    buffer = setmetatable({readstring = function(b, o, c) local s = orig_buf(b, o, c); log("STR", s); return s end}, {__index = buffer})
+end)
+game = spy("game", "Instance"); workspace = spy("workspace", "Instance"); script = spy("script", "Instance")
+Instance = spy("Instance", "table"); Enum = spy("Enum", "Enums"); task = spy("task", "table")
+Vector3 = spy("Vector3", "table"); Vector2 = spy("Vector2", "table"); CFrame = spy("CFrame", "table")
+Color3 = spy("Color3", "table"); UDim2 = spy("UDim2", "table"); TweenInfo = spy("TweenInfo", "table")
+syn = spy("syn", "table"); http = spy("http", "table"); request = spy("request", "function"); http_request = spy("http_request", "function")
+tick = os.clock; time = os.clock; warn = function(...) log("WARN", ...) end
+getgenv = function() return _G end; getrenv = function() return _G end
+identifyexecutor = function() return "Delta", "2.0" end
+loadstring = function(c) log("LOADSTRING", c); return function() return spy("chunk") end end
+wait = function() return 0.03 end; spawn = function(f) if type(f)=="function" then pcall(f) end end
+local mt = {__index = function(_, k) log("GLOBAL", k); return spy(tostring(k), "Instance") end}
+setmetatable(getfenv(0), mt); setmetatable(getfenv(1), mt)
+'@ | Out-File -FilePath "sandbox2.lua" -Encoding ascii
+$raw = Get-Content "stage1_out.txt" -Raw
+if ($raw -match "(?s)--STAGE2_BEGIN--\r?\n(.*?)\r?\n--STAGE2_END--") {
+    [IO.File]::WriteAllText("stage2_run.lua", (Get-Content "sandbox2.lua" -Raw) + "`n" + $matches[1])
+    .\luau.exe stage2_run.lua *> final_dump.txt
+    notepad final_dump.txt
+}
