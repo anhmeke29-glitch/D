@@ -1,0 +1,22 @@
+$sb = Get-Content "sandbox_full.lua" -Raw
+$hook = @'
+local _orig_sm = setmetatable
+setmetatable = function(t, mt)
+    if _type(t) == "table" and _type(mt) == "table" then
+        local old_idx = mt.__index
+        mt.__index = function(self, k)
+            log("GET", "mt." .. _tostring(k))
+            if _type(old_idx) == "function" then return old_idx(self, k) end
+            if _type(old_idx) == "table" then return old_idx[k] end
+            return nil
+        end
+        return _orig_sm(t, mt)
+    end
+    return _orig_sm(t, mt)
+end
+'@
+$sb = $sb -replace 'local real = \{', ($hook + "`nlocal real = {")
+[IO.File]::WriteAllText("sandbox_full.lua", $sb)
+[IO.File]::WriteAllText("full_run.lua", (Get-Content "sandbox_full.lua" -Raw) + "`n" + (Get-Content "input.lua" -Raw))
+.\luau.exe full_run.lua *> final_dump.txt
+notepad final_dump.txt
