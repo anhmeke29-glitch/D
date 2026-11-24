@@ -1,0 +1,46 @@
+@'
+local seen = {}
+local function log(t, v)
+    local s = tostring(v)
+    if #s >= 4 and not seen[t .. s] then
+        seen[t .. s] = true
+        print("[" .. t .. "] " .. s)
+    end
+end
+local function spy(n)
+    return setmetatable({}, {
+        __index = function(_, k) log("GET", n.."."..tostring(k)); return spy(n.."."..tostring(k)) end,
+        __newindex = function(_, k, v) log("SET", n.."."..tostring(k).."="..tostring(v)) end,
+        __call = function(_, ...)
+            for _, a in ipairs({...}) do log("ARG", a) end
+            log("CALL", n)
+            return spy(n.."()")
+        end,
+        __tostring = function() return n end,
+        __eq = function() return true end,
+        __lt = function() return false end,
+        __le = function() return true end,
+        __add = function() return 0 end,
+        __sub = function() return 0 end,
+        __mul = function() return 0 end,
+        __div = function() return 0 end,
+        __concat = function(a, b) local r = tostring(a)..tostring(b); log("CAT", r); return r end
+    })
+end
+game = spy("game"); workspace = spy("workspace"); script = spy("script")
+Instance = spy("Instance"); Enum = spy("Enum"); task = spy("task")
+Vector3 = spy("Vector3"); CFrame = spy("CFrame"); Color3 = spy("Color3"); UDim2 = spy("UDim2")
+syn = spy("syn"); http = spy("http"); request = spy("request"); http_request = spy("http_request")
+tick = os.clock; time = os.clock
+getgenv = function() return _G end; getrenv = function() return _G end
+identifyexecutor = function() return "Delta", "2.0" end
+loadstring = function(c) log("LOADSTRING", c); return spy("chunk") end
+wait = function() return 0.03 end; spawn = function(f) if type(f)=="function" then pcall(f) end end
+pcall(function()
+    local orig = buffer.readstring
+    buffer = setmetatable({readstring = function(b, o, c) local s = orig(b, o, c); log("STR", s); return s end}, {__index = buffer})
+end)
+'@ | Out-File -FilePath "sandbox.lua" -Encoding ascii
+[IO.File]::WriteAllText("test_run.lua", (Get-Content "sandbox.lua" -Raw) + "`n" + (Get-Content "input.lua" -Raw))
+.\luau.exe test_run.lua > dumped.txt
+notepad dumped.txt
