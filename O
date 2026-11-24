@@ -1,0 +1,170 @@
+@'
+import re
+
+with open("output.bin", "rb") as f:
+    D = f.read()
+
+# Dịch sát thuật toán Range Decoder của Luraph v15.1 từ hàm S=function(e,r,j)
+class LPHRangeDecoder:
+    def __init__(self, data):
+        self.D = data
+        self.i = 5
+        self.G = 4294967295
+        c = 0
+        for idx in range(5):
+            c = (c * 256 + (data[idx] if idx < len(data) else 0)) & 0xFFFFFFFF
+        self.c = c
+
+    def bit(self, probs, idx):
+        p = probs[idx]
+        U = (self.G >> 11) * p
+        if self.c < U:
+            self.G = U
+            probs[idx] = p + ((2048 - p) >> 5)
+            res = 0
+        else:
+            self.G = (self.G - U) & 0xFFFFFFFF
+            self.c = (self.c - U) & 0xFFFFFFFF
+            probs[idx] = p - (p >> 5)
+            res = 1
+        if self.G <= 16777215:
+            self.G = (self.G * 256) & 0xFFFFFFFF
+            b = self.D[self.i] if self.i < len(self.D) else 0
+            self.i += 1
+            self.c = ((self.c * 256) + b) & 0xFFFFFFFF
+        return res
+
+    def direct(self, n):
+        res = 0
+        for _ in range(n):
+            self.G >>= 1
+            if self.c >= self.G:
+                self.c = (self.c - self.G) & 0xFFFFFFFF
+                res = (res << 1) | 1
+            else:
+                res <<= 1
+            if self.G <= 16777215:
+                self.G = (self.G * 256) & 0xFFFFFFFF
+                b = self.D[self.i] if self.i < len(self.D) else 0
+                self.i += 1
+                self.c = ((self.c * 256) + b) & 0xFFFFFFFF
+        return res
+
+    def tree(self, probs, offset, bits):
+        m = 1
+        for _ in range(bits):
+            m = (m << 1) | self.bit(probs, offset + m)
+        return m - (1 << bits)
+
+    def reverse_tree(self, probs, offset, bits):
+        m = 1
+        res = 0
+        for bit_idx in range(bits):
+            b = self.bit(probs, offset + m)
+            m = (m << 1) | b
+            res |= (b << bit_idx)
+        return res
+
+# Khởi tạo các bảng xác suất LZMA chuẩn theo tham số của Luraph (lc=3, lp=0, pb=2)
+lc, lp, pb = 3, 0, 2
+pos_states = 1 << pb
+is_match = [1024] * (12 * pos_states)
+is_rep = [1024] * 12
+is_rep_g0 = [1024] * 12
+is_rep_g1 = [1024] * 12
+is_rep_g2 = [1024] * 12
+is_rep0_long = [1024] * (12 * pos_states)
+lit_probs = [1024] * (0x300 << (lc + lp))
+pos_slot = [1024] * (4 * 64)
+pos_decoders = [1024] * 115
+align_probs = [1024] * 16
+
+def decode_len(rd, probs, pos_state):
+    if rd.bit(probs, 0) == 0:
+        return rd.tree(probs, 2 + (pos_state << 3), 3)
+    if rd.bit(probs, 1) == 0:
+        return 8 + rd.tree(probs, 130 + (pos_state << 3), 3)
+    return 16 + rd.tree(probs, 258, 8)
+
+len_dec = [1024] * 514
+rep_len_dec = [1024] * 514
+
+rd = LPHRangeDecoder(D)
+out = bytearray()
+state = 0
+rep0 = rep1 = rep2 = rep3 = 0
+
+try:
+    while rd.i < len(D):
+        pos_state = len(out) & (pos_states - 1)
+        if rd.bit(is_match, (state << pb) + pos_state) == 0:
+            prev_byte = out[-1] if out else 0
+            lit_ctx = ((len(out) & ((1 << lp) - 1)) << lc) + (prev_byte >> (8 - lc))
+            base = lit_ctx * 0x300
+            sym = 1
+            if state >= 7:
+                match_byte = out[len(out) - rep0 - 1] if len(out) > rep0 else 0
+                while sym < 0x100:
+                    match_bit = (match_byte >> 7) & 1
+                    match_byte <<= 1
+                    bit = rd.bit(lit_probs, base + ((1 + match_bit) << 8) + sym)
+                    sym = (sym << 1) | bit
+                    if match_bit != bit:
+                        break
+            while sym < 0x100:
+                sym = (sym << 1) | rd.bit(lit_probs, base + sym)
+            out.append(sym & 0xFF)
+            state = 0 if state < 4 else (state - 3 if state < 10 else state - 6)
+        else:
+            if rd.bit(is_rep, state) == 1:
+                if rd.bit(is_rep_g0, state) == 0:
+                    if rd.bit(is_rep0_long, (state << pb) + pos_state) == 0:
+                        state = 9 if state < 7 else 11
+                        out.append(out[len(out) - rep0 - 1])
+                        continue
+                else:
+                    if rd.bit(is_rep_g1, state) == 0:
+                        dist = rep1
+                    else:
+                        if rd.bit(is_rep_g2, state) == 0:
+                            dist = rep2
+                        else:
+                            dist = rep3
+                            rep3 = rep2
+                        rep2 = rep1
+                    rep1 = rep0
+                    rep0 = dist
+                length = decode_len(rd, rep_len_dec, pos_state) + 2
+                state = 8 if state < 7 else 11
+            else:
+                rep3, rep2, rep1 = rep2, rep1, rep0
+                length = decode_len(rd, len_dec, pos_state) + 2
+                state = 7 if state < 7 else 10
+                len_state = min(length - 2, 3)
+                slot = rd.tree(pos_slot, len_state << 6, 6)
+                if slot >= 4:
+                    num_direct = (slot >> 1) - 1
+                    rep0 = (2 | (slot & 1)) << num_direct
+                    if slot < 14:
+                        rep0 += rd.reverse_tree(pos_decoders, rep0 - slot - 1, num_direct)
+                    else:
+                        rep0 += rd.direct(num_direct - 4) << 4
+                        rep0 += rd.reverse_tree(align_probs, 0, 4)
+                        if rep0 == 0xFFFFFFFF:
+                            break
+                else:
+                    rep0 = slot
+            for _ in range(length):
+                out.append(out[len(out) - rep0 - 1])
+except Exception as e:
+    print("Dung giai nen tai byte:", len(out), "| Ly do:", e)
+
+with open("unpacked_lph.bin", "wb") as f:
+    f.write(out)
+
+print(f"Da giai nen thanh cong: {len(out)} bytes -> unpacked_lph.bin")
+words = re.findall(rb'[\x20-\x7e]{5,}', out)
+print(f"--- Tim thay {len(words)} chuoi van ban ro nghia ---")
+for w in words[:150]:
+    print(w.decode("ascii", errors="ignore"))
+'@ | Out-File -FilePath "lzma_lph.py" -Encoding utf8; .\py\python.exe lzma_lph.py
